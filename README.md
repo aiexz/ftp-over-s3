@@ -25,7 +25,7 @@ docker run -p 8080:8080 \
   -e FTP_PASSWORD=your_password \
   -e S3_ACCESS_KEY_ID=your_access_key \
   -e S3_SECRET_KEY=your_secret_key \
-  ghcr.io/aiexz/ftp-over-s3:latest
+  ghcr.io/aiexz/ftp-over-s3:master
 ```
 
 ## Installation
@@ -33,7 +33,7 @@ docker run -p 8080:8080 \
 ### Using Docker
 Pull the image from GitHub Container Registry:
 ```bash
-docker pull ghcr.io/aiexz/ftp-over-s3:latest
+docker pull ghcr.io/aiexz/ftp-over-s3:master
 ```
 
 ### Building from Source
