@@ -65,10 +65,33 @@ func (s *S3Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodHead:
 		slog.Debug("handling HeadObject request", "path", r.URL.Path)
 		s.handleHead(w, r)
+	case http.MethodPost:
+		// Handle multipart upload operations
+		if r.URL.Query().Get("uploads") != "" {
+			slog.Debug("handling CreateMultipartUpload request", "path", r.URL.Path)
+			s.handleCreateMultipartUpload(w, r)
+			return
+		}
+		if strings.Contains(r.URL.Query().Get("uploadId"), "") {
+			slog.Debug("handling CompleteMultipartUpload request", "path", r.URL.Path)
+			s.handleCompleteMultipartUpload(w, r)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	case http.MethodPut:
+		if uploadID := r.URL.Query().Get("uploadId"); uploadID != "" {
+			slog.Debug("handling UploadPart request", "path", r.URL.Path)
+			s.handleUploadPart(w, r)
+			return
+		}
 		slog.Debug("handling PutObject request", "path", r.URL.Path)
 		s.handlePut(w, r)
 	case http.MethodDelete:
+		if uploadID := r.URL.Query().Get("uploadId"); uploadID != "" {
+			slog.Debug("handling AbortMultipartUpload request", "path", r.URL.Path)
+			s.handleAbortMultipartUpload(w, r)
+			return
+		}
 		slog.Debug("handling DeleteObject request", "path", r.URL.Path)
 		s.handleDelete(w, r)
 	default:
@@ -528,4 +551,49 @@ func (s *S3Server) handleHead(w http.ResponseWriter, r *http.Request) {
 
 	// File not found
 	http.Error(w, "Key \""+path+"\" does not exist", http.StatusNotFound)
+}
+
+func (s *S3Server) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request) {
+	// For now, just return a simple response that indicates we don't support multipart uploads
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NotImplemented</Code>
+    <Message>Multipart upload is not supported. Please use single-part upload instead.</Message>
+    <RequestId>00000000-0000-0000-0000-000000000000</RequestId>
+</Error>`))
+}
+
+func (s *S3Server) handleUploadPart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NotImplemented</Code>
+    <Message>Multipart upload is not supported. Please use single-part upload instead.</Message>
+    <RequestId>00000000-0000-0000-0000-000000000000</RequestId>
+</Error>`))
+}
+
+func (s *S3Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NotImplemented</Code>
+    <Message>Multipart upload is not supported. Please use single-part upload instead.</Message>
+    <RequestId>00000000-0000-0000-0000-000000000000</RequestId>
+</Error>`))
+}
+
+func (s *S3Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NotImplemented</Code>
+    <Message>Multipart upload is not supported. Please use single-part upload instead.</Message>
+    <RequestId>00000000-0000-0000-0000-000000000000</RequestId>
+</Error>`))
 }
