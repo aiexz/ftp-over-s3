@@ -147,7 +147,12 @@ func NewS3Server(config *Config) (*S3Server, error) {
 
 	var backend Backend
 	if strings.EqualFold(strings.TrimSpace(config.Backend), "sftp") {
-		backend = NewSFTPClient(config)
+		sftpBackend := NewSFTPClient(config)
+		if err := sftpBackend.initAuth(); err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+		backend = sftpBackend
 	} else {
 		backend = NewFTPClient(config)
 	}

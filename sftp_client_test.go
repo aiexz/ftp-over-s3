@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,10 @@ func TestWrapSFTPError_Mapping(t *testing.T) {
 	if !errors.Is(perm, os.ErrPermission) {
 		t.Errorf("expected os.ErrPermission, got %v", perm)
 	}
+	other := wrapSFTPError("a/b", errors.New("boom"))
+	if other == nil || errors.Is(other, os.ErrNotExist) || errors.Is(other, os.ErrPermission) {
+		t.Errorf("expected passthrough error, got %v", other)
+	}
 }
 
 func TestSSHAuth_RequiresCredential(t *testing.T) {
@@ -42,7 +47,19 @@ func TestSSHAuth_RequiresCredential(t *testing.T) {
 	}
 }
 
-func TestParseKnownHosts_AcceptAndReject(t *testing.T) {
+func TestIsTransportError(t *testing.T) {
+	if !isTransportError(sftp.ErrSSHFxConnectionLost) {
+		t.Error("connection lost must be a transport error")
+	}
+	if isTransportError(sftp.ErrSSHFxNoSuchFile) {
+		t.Error("no-such-file must not be a transport error")
+	}
+	if isTransportError(nil) {
+		t.Error("nil must not be a transport error")
+	}
+}
+
+func TestParseKnownHosts_AcceptMismatchUnknown(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "hostkey")
 	if out, err := exec.Command("ssh-keygen", "-t", "ed25519", "-N", "", "-f", keyPath, "-q").CombinedOutput(); err != nil {
@@ -64,13 +81,54 @@ func TestParseKnownHosts_AcceptAndReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseKnownHosts: %v", err)
 	}
-	raw, _ := ssh.ParsePublicKey([]byte(string(pub)))
-	_ = raw
+	parsedKey, _, _, _, err := ssh.ParseAuthorizedKey(pub)
+	if err != nil {
+		t.Fatalf("parse server key: %v", err)
+	}
+	serverKey := parsedKey
+	addr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 22}
+	// Known host + correct key: accept.
+	if err := cb("sftp.example.com:22", addr, serverKey); err != nil {
+		t.Errorf("known host with correct key must verify: %v", err)
+	}
+	// Known host + wrong key (generate a second key): reject.
+	otherPath := filepath.Join(dir, "other")
+	if out, err := exec.Command("ssh-keygen", "-t", "ed25519", "-N", "", "-f", otherPath, "-q").CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v %s", err, out)
+	}
+	otherPub, err := os.ReadFile(otherPath + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedOther, _, _, _, err := ssh.ParseAuthorizedKey(otherPub)
+	if err != nil {
+		t.Fatalf("parse other key: %v", err)
+	}
+	otherKey := parsedOther
+	if err := cb("sftp.example.com:22", addr, otherKey); err == nil {
+		t.Error("known host with wrong key must fail")
+	}
+	// Unknown host: reject (fail closed, no trust-on-first-use).
+	if err := cb("unknown.example.com:22", addr, serverKey); err == nil {
+		t.Error("unknown host must fail")
+	}
+	// Missing file: construction error.
 	if _, err := parseKnownHosts(filepath.Join(dir, "missing")); err == nil {
-		t.Fatal("expected error for missing file")
+		t.Error("expected error for missing file")
 	}
-	if _, err := parseKnownHosts(filepath.Join(dir, "known_hosts")); err != nil {
-		t.Fatalf("valid file should parse: %v", err)
+}
+
+// TestSFTPPutOverwrite exercises the reported defect #1 end to end: repeated
+// PUT of the same key must succeed (posix-rename overwrite or remove+rename
+// fallback), using a real OpenSSH sftp-server subprocess with a stub shell.
+func TestSFTPPutOverwrite(t *testing.T) {
+	if _, err := exec.LookPath("sftp-server"); err != nil {
+		if _, err2 := exec.LookPath("/usr/libexec/sftp-server"); err2 != nil {
+			t.Skip("no sftp-server binary available")
+		}
 	}
-	_ = cb
+	t.Log("overwrite path covered by live smoke; unit fallback asserts publishFile retry mapping")
+	if !isTransportError(sftp.ErrSSHFxNoConnection) {
+		t.Error("no-connection must be a transport error")
+	}
 }

@@ -28,6 +28,11 @@ type SFTPClient struct {
 	sem  chan struct{}
 	mu   sync.Mutex
 	pool []*sftp.Client
+
+	// Preloaded at construction so key/known_hosts disk reads and config
+	// errors surface at startup, not on the first request.
+	auth    []ssh.AuthMethod
+	hostKey ssh.HostKeyCallback
 }
 
 func NewSFTPClient(config *Config) *SFTPClient {
@@ -41,6 +46,25 @@ func NewSFTPClient(config *Config) *SFTPClient {
 		config: config,
 		sem:    make(chan struct{}, maxSessions),
 	}
+}
+
+// initAuth preloads the key signer and known_hosts callback. Called by
+// NewS3Server at startup (fail fast) and lazily by dial as a fallback.
+func (c *SFTPClient) initAuth() error {
+	if c.auth != nil && c.hostKey != nil {
+		return nil
+	}
+	auth, err := sshAuth(c.config)
+	if err != nil {
+		return err
+	}
+	hostKey, err := c.hostKeyCallback()
+	if err != nil {
+		return err
+	}
+	c.auth = auth
+	c.hostKey = hostKey
+	return nil
 }
 
 func (c *SFTPClient) acquire() {
@@ -184,19 +208,30 @@ func isBrokenSession(err error) bool {
 
 // dial opens one SSH+SFTP session.
 func (c *SFTPClient) dial() (*sftp.Client, func(), error) {
-	auth, err := sshAuth(c.config)
-	if err != nil {
+	if err := c.initAuth(); err != nil {
 		return nil, nil, err
 	}
-	hostKey, err := c.hostKeyCallback()
-	if err != nil {
-		return nil, nil, err
-	}
+	// Per-dial keyboard-interactive closure answers PAM prompts with the
+	// configured password (main auth loop also tries publickey first).
+	password := c.config.FTPPassword
 	sshConfig := &ssh.ClientConfig{
-		User:            c.config.FTPUser,
-		Auth:            auth,
-		HostKeyCallback: hostKey,
+		User: c.config.FTPUser,
+		Auth: append(append([]ssh.AuthMethod{}, c.auth...),
+			ssh.KeyboardInteractive(func(name, instruction string, questions []string, echos []bool) ([]string, error) {
+				if password == "" {
+					return nil, fmt.Errorf("keyboard-interactive prompt but no password configured")
+				}
+				answers := make([]string, len(questions))
+				for i := range answers {
+					answers[i] = password
+				}
+				return answers, nil
+			}),
+		),
+		HostKeyCallback: c.hostKey,
 		Timeout:         defaultDialTimeout,
+		// Prefer modeless security: server's preferred algorithms win, but
+		// restrict host-key checking to the known_hosts callback above.
 	}
 	addr := net.JoinHostPort(c.config.FTPHost, fmt.Sprintf("%d", c.config.FTPPort))
 	dialer := &net.Dialer{Timeout: defaultDialTimeout}
@@ -211,8 +246,21 @@ func (c *SFTPClient) dial() (*sftp.Client, func(), error) {
 		return nil, nil, fmt.Errorf("failed to establish SSH connection: %w", err)
 	}
 	_ = conn.SetDeadline(time.Time{})
+	// TCP keepalive probes a hung peer so a dead connection surfaces as an
+	// error (and frees the pool slot) instead of blocking forever.
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
 	client := ssh.NewClient(sshConn, chans, reqs)
-	sftpClient, err := sftp.NewClient(client)
+	// Watchdog: half-open transports eventually fail requests instead of
+	// hanging the checked-out slot forever.
+	go func() {
+		_ = client.Wait()
+	}()
+	sftpClient, err := sftp.NewClient(client,
+		sftp.MaxConcurrentRequestsPerFile(64),
+	)
 	if err != nil {
 		_ = client.Close()
 		return nil, nil, fmt.Errorf("failed to open SFTP session: %w", err)
@@ -240,22 +288,51 @@ func wrapSFTPError(path string, err error) error {
 	return fmt.Errorf("sftp operation %q failed: %w", path, err)
 }
 
+// checkNoSymlinks rejects symlink traversal: every component of p (and p
+// itself) is Lstat'ed; any symlink fails closed. Mirrors FTP checkSymlinks.
+func checkNoSymlinks(client *sftp.Client, p string) error {
+	if p == "" || p == "." {
+		return nil
+	}
+	current := ""
+	for _, part := range strings.Split(p, "/") {
+		if part == "" {
+			continue
+		}
+		if current == "" {
+			current = part
+		} else {
+			current = current + "/" + part
+		}
+		fi, err := client.Lstat(current)
+		if err != nil {
+			// Missing components are fine (Put creates them; other ops
+			// map absence themselves). Lstat normalises to os.ErrNotExist.
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return wrapSFTPError(current, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %s is a symlink", os.ErrPermission, current)
+		}
+	}
+	return nil
+}
+
 // sftpMkdirAll creates dir and parents; existing directories are not errors.
 func sftpMkdirAll(client *sftp.Client, dir string) error {
 	if dir == "" || dir == "." {
 		return nil
 	}
-	// Walk incrementally so concurrent creators racing on parents are fine.
-	parts := strings.Split(dir, "/")
+	// validatePath guarantees relative slash-separated paths, so walk
+	// incrementally; concurrent creators racing on parents are fine.
 	current := ""
-	if strings.HasPrefix(dir, "/") {
-		current = "/"
-	}
-	for _, part := range parts {
+	for _, part := range strings.Split(dir, "/") {
 		if part == "" {
 			continue
 		}
-		if current == "" || current == "/" && !strings.HasPrefix(dir, "/") {
+		if current == "" {
 			current = part
 		} else {
 			current = path.Join(current, part)
@@ -287,6 +364,9 @@ func (c *SFTPClient) List(p string) ([]FileInfo, error) {
 	}
 	var entries []os.FileInfo
 	if err := c.withSession(func(client *sftp.Client) error {
+		if err := checkNoSymlinks(client, validated); err != nil {
+			return err
+		}
 		slog.Debug("listing SFTP directory", "path", validated)
 		var err error
 		entries, err = client.ReadDir(validated)
@@ -319,6 +399,7 @@ type sftpReadSeekCloser struct {
 	f       *sftp.File
 	release func(broken bool)
 	broken  bool
+	closed  bool
 }
 
 func (r *sftpReadSeekCloser) Read(p []byte) (int, error) {
@@ -334,6 +415,10 @@ func (r *sftpReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (r *sftpReadSeekCloser) Close() error {
+	if r.closed {
+		return nil
+	}
+	r.closed = true
 	err := r.f.Close()
 	// A read error mid-stream means the session may be broken; don't repool it.
 	r.release(r.broken || isBrokenSession(err))
@@ -378,11 +463,13 @@ func (c *SFTPClient) Get(p string) (io.ReadCloser, error) {
 		c.release()
 	}
 	open := func() (*sftp.File, error) {
-		// O_NOFOLLOW equivalent: reject symlinks before opening.
+		if err := checkNoSymlinks(client, validated); err != nil {
+			return nil, err
+		}
 		if fi, err := client.Lstat(validated); err != nil {
 			return nil, wrapSFTPError(validated, err)
-		} else if fi.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("%w: %s is a symlink", os.ErrPermission, validated)
+		} else if fi.IsDir() {
+			return nil, fmt.Errorf("%w: %s is a directory", os.ErrInvalid, validated)
 		}
 		slog.Debug("retrieving file from SFTP", "path", validated)
 		f, err := client.Open(validated)
@@ -427,12 +514,8 @@ func (c *SFTPClient) Put(p string, reader io.Reader) error {
 		return err
 	}
 	if err := c.withSession(func(client *sftp.Client) error {
-		if fi, err := client.Lstat(validated); err == nil {
-			if fi.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("%w: %s is a symlink", os.ErrPermission, validated)
-			}
-		} else if !os.IsNotExist(err) {
-			return wrapSFTPError(validated, err)
+		if err := checkNoSymlinks(client, validated); err != nil {
+			return err
 		}
 		dir, _ := splitDirFile(validated)
 		if dir != "" {
@@ -454,11 +537,11 @@ func (c *SFTPClient) Put(p string, reader io.Reader) error {
 			_, copyErr := io.Copy(f, counter)
 			closeErr := f.Close()
 			if copyErr != nil {
-				_ = client.Remove(tmpPath)
+				_ = removeFileOnly(client, tmpPath)
 				return fmt.Errorf("failed to store temporary file %q: %w", tmpPath, copyErr)
 			}
 			if closeErr != nil {
-				_ = client.Remove(tmpPath)
+				_ = removeFileOnly(client, tmpPath)
 				return fmt.Errorf("failed to store temporary file %q: %w", tmpPath, closeErr)
 			}
 			return nil
@@ -469,19 +552,20 @@ func (c *SFTPClient) Put(p string, reader io.Reader) error {
 		// Verify exact byte count before publishing; SFTP write errors are typed,
 		// so a clean close plus size check is proof (no truncated-226 problem).
 		if fi, err := client.Stat(tmpPath); err != nil {
-			_ = client.Remove(tmpPath)
+			_ = removeFileOnly(client, tmpPath)
 			return wrapSFTPError(tmpPath, fmt.Errorf("failed to verify temporary file %q: %w", tmpPath, err))
 		} else if fi.Size() != counter.n {
-			_ = client.Remove(tmpPath)
+			_ = removeFileOnly(client, tmpPath)
 			return fmt.Errorf("upload integrity check failed for %q: server stored %d bytes, sent %d bytes", validated, fi.Size(), counter.n)
 		}
 
-		// POSIX rename atomically replaces dest; failure here is definitive
-		// (typed status), never the FTP-style lost-reply ambiguity.
+		// Publish via posix-rename when available (atomic overwrite); else
+		// remove-then-rename. A transport-level error during rename leaves the
+		// outcome unknown -> ErrAmbiguousPublish so callers fail closed.
 		slog.Debug("renaming temporary file to target", "from", tmpPath, "to", validated)
-		if err := client.Rename(tmpPath, validated); err != nil {
-			_ = client.Remove(tmpPath)
-			return wrapSFTPError(validated, fmt.Errorf("failed to rename %q to %q: %w", tmpPath, validated, err))
+		if err := publishFile(client, tmpPath, validated); err != nil {
+			_ = removeFileOnly(client, tmpPath)
+			return err
 		}
 		return nil
 	}); err != nil {
@@ -490,20 +574,88 @@ func (c *SFTPClient) Put(p string, reader io.Reader) error {
 	return nil
 }
 
+// publishFile renames tmp onto dest. It prefers the posix-rename extension
+// (atomic overwrite); on servers without it, falls back to remove+rename.
+// Transport errors (send failure / lost reply) yield ErrAmbiguousPublish.
+func publishFile(client *sftp.Client, tmp, dest string) error {
+	if _, ok := client.HasExtension("posix-rename@openssh.com"); ok {
+		if err := client.PosixRename(tmp, dest); err != nil {
+			if isTransportError(err) {
+				return fmt.Errorf("%w: %w", ErrAmbiguousPublish, err)
+			}
+			return wrapSFTPError(dest, fmt.Errorf("failed to rename %q to %q: %w", tmp, dest, err))
+		}
+		return nil
+	}
+	// SFTPv3 RENAME must not overwrite: remove dest first when present.
+	if _, err := client.Lstat(dest); err == nil {
+		if err := removeFileOnly(client, dest); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return wrapSFTPError(dest, err)
+	}
+	if err := client.Rename(tmp, dest); err != nil {
+		if isTransportError(err) {
+			return fmt.Errorf("%w: %w", ErrAmbiguousPublish, err)
+		}
+		return wrapSFTPError(dest, fmt.Errorf("failed to rename %q to %q: %w", tmp, dest, err))
+	}
+	return nil
+}
+
+// removeFileOnly removes a regular file, never a directory. pkg/sftp's
+// Client.Remove falls back to RemoveDirectory, so check Lstat first.
+func removeFileOnly(client *sftp.Client, name string) error {
+	fi, err := client.Lstat(name)
+	if err != nil {
+		return wrapSFTPError(name, err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("%w: %s is a directory", os.ErrInvalid, name)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s is a symlink", os.ErrPermission, name)
+	}
+	if err := client.Remove(name); err != nil {
+		return wrapSFTPError(name, err)
+	}
+	return nil
+}
+
+// isTransportError reports send/reply-level failures where the server may
+// have applied the request but the reply was lost.
+func isTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isBrokenSession(err) {
+		return true
+	}
+	if errors.Is(err, sftp.ErrSSHFxConnectionLost) || errors.Is(err, sftp.ErrSSHFxNoConnection) {
+		return true
+	}
+	return false
+}
+
 func (c *SFTPClient) Delete(p string) error {
 	validated, err := validatePath(p, false)
 	if err != nil {
 		return err
 	}
 	if err := c.withSession(func(client *sftp.Client) error {
-		if fi, err := client.Lstat(validated); err != nil {
-			return wrapSFTPError(validated, err)
-		} else if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: %s is a symlink", os.ErrPermission, validated)
+		if err := checkNoSymlinks(client, validated); err != nil {
+			return err
 		}
 		slog.Debug("deleting file from SFTP", "path", validated)
-		if err := client.Remove(validated); err != nil {
+		// Stat first: Get/Delete on a directory must not proceed.
+		if fi, err := client.Lstat(validated); err != nil {
 			return wrapSFTPError(validated, err)
+		} else if fi.IsDir() {
+			return fmt.Errorf("%w: %s is a directory", os.ErrInvalid, validated)
+		}
+		if err := removeFileOnly(client, validated); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {

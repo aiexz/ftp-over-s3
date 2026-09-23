@@ -94,9 +94,13 @@ func envDefault(key, fallback string) string {
 func parseConfig() *Config {
 	config := &Config{}
 	flag.StringVar(&config.Backend, "backend", envDefault("BACKEND", "ftp"), "Storage backend (ftp or sftp)")
+	defaultPort := "21"
+	if strings.EqualFold(strings.TrimSpace(envDefault("BACKEND", "ftp")), "sftp") {
+		defaultPort = "22"
+	}
 	forceBackend := flag.String("force-backend", envDefault("FORCE_BACKEND", "false"), "Rebind state directory to current backend after operator confirmation (true or false)")
 	flag.StringVar(&config.FTPHost, "ftp-host", envDefault("FTP_HOST", "localhost"), "FTP/SFTP server host")
-	port := flag.String("ftp-port", envDefault("FTP_PORT", "21"), "FTP/SFTP server port")
+	port := flag.String("ftp-port", envDefault("FTP_PORT", defaultPort), "FTP/SFTP server port")
 	ftpTLS := flag.String("ftp-tls", envDefault("FTP_TLS", "false"), "Use certificate-verified explicit FTPS (true or false)")
 	maxConnections := flag.String("ftp-max-connections", envDefault("FTP_MAX_CONNECTIONS", "2"), "Maximum simultaneous FTP/SFTP connections")
 	sftpSessions := flag.String("sftp-max-sessions", envDefault("SFTP_MAX_SESSIONS", ""), "Maximum pooled SFTP sessions (default: same as -ftp-max-connections)")

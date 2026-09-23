@@ -404,7 +404,7 @@ func (s *S3Server) handleCopyObject(w http.ResponseWriter, r *http.Request, buck
 			writeOperationError(w, r, s3OperationError{
 				Status:  http.StatusInternalServerError,
 				Code:    "InternalError",
-				Message: "Failed to retrieve copy source from FTP.",
+				Message: "Failed to retrieve copy source from storage backend.",
 			})
 			return
 		}
@@ -705,7 +705,7 @@ func (s *S3Server) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, 
 			writeOperationError(w, r, s3OperationError{
 				Status:  http.StatusInternalServerError,
 				Code:    "InternalError",
-				Message: "Failed to retrieve copy source from FTP.",
+				Message: "Failed to retrieve copy source from storage backend.",
 			})
 			return
 		}
