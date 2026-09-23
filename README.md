@@ -54,6 +54,7 @@ Explicit command-line flags override environment variables.
 | `-sftp-key-file` | `SFTP_KEY_FILE` | Empty; SFTP private key file |
 | `-sftp-key-pass` | `SFTP_KEY_PASS` | Empty; SFTP private key passphrase |
 | `-sftp-known-hosts` | `SFTP_KNOWN_HOSTS` | Required for `sftp` backend; known_hosts file |
+| `-sftp-max-sessions` | `SFTP_MAX_SESSIONS` | Pooled SFTP sessions (default: same as `-ftp-max-connections`) |
 | `-force-backend` | `FORCE_BACKEND` | `false`; `true` rebinds `STATE_DIR` to the current backend once |
 | `-listen` | `LISTEN_ADDR` | `:8080` |
 | `-access-key-id` | `S3_ACCESS_KEY_ID` | Empty: authentication disabled |

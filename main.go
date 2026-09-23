@@ -17,6 +17,7 @@ import (
 type Config struct {
 	Backend              string
 	ForceBackend         bool
+	SFTPMaxSessions      int
 	FTPHost              string
 	FTPPort              int
 	FTPUser              string
@@ -98,6 +99,7 @@ func parseConfig() *Config {
 	port := flag.String("ftp-port", envDefault("FTP_PORT", "21"), "FTP/SFTP server port")
 	ftpTLS := flag.String("ftp-tls", envDefault("FTP_TLS", "false"), "Use certificate-verified explicit FTPS (true or false)")
 	maxConnections := flag.String("ftp-max-connections", envDefault("FTP_MAX_CONNECTIONS", "2"), "Maximum simultaneous FTP/SFTP connections")
+	sftpSessions := flag.String("sftp-max-sessions", envDefault("SFTP_MAX_SESSIONS", ""), "Maximum pooled SFTP sessions (default: same as -ftp-max-connections)")
 	flag.StringVar(&config.FTPUser, "ftp-user", os.Getenv("FTP_USER"), "FTP/SFTP username")
 	flag.StringVar(&config.FTPPassword, "ftp-password", os.Getenv("FTP_PASSWORD"), "FTP password or SFTP password auth")
 	flag.StringVar(&config.SFTPKeyFile, "sftp-key-file", os.Getenv("SFTP_KEY_FILE"), "SFTP private key file (optional when password set)")
@@ -132,6 +134,15 @@ func parseConfig() *Config {
 	if err != nil || config.FTPMaxConnections < 1 {
 		slog.Error("FTP_MAX_CONNECTIONS / -ftp-max-connections must be a positive integer")
 		os.Exit(1)
+	}
+	if strings.TrimSpace(*sftpSessions) == "" {
+		config.SFTPMaxSessions = config.FTPMaxConnections
+	} else {
+		config.SFTPMaxSessions, err = strconv.Atoi(*sftpSessions)
+		if err != nil || config.SFTPMaxSessions < 1 {
+			slog.Error("SFTP_MAX_SESSIONS / -sftp-max-sessions must be a positive integer")
+			os.Exit(1)
+		}
 	}
 	config.MaxStagingBytes, err = strconv.ParseInt(*stagingBytes, 10, 64)
 	if err != nil || config.MaxStagingBytes < 1 {

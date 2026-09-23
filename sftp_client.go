@@ -31,13 +31,15 @@ type SFTPClient struct {
 }
 
 func NewSFTPClient(config *Config) *SFTPClient {
-	maxConnections := defaultMaxConnections
-	if config.FTPMaxConnections > 0 {
-		maxConnections = config.FTPMaxConnections
+	maxSessions := defaultMaxConnections
+	if config.SFTPMaxSessions > 0 {
+		maxSessions = config.SFTPMaxSessions
+	} else if config.FTPMaxConnections > 0 {
+		maxSessions = config.FTPMaxConnections
 	}
 	return &SFTPClient{
 		config: config,
-		sem:    make(chan struct{}, maxConnections),
+		sem:    make(chan struct{}, maxSessions),
 	}
 }
 
