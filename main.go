@@ -16,6 +16,7 @@ import (
 
 type Config struct {
 	Backend              string
+	ForceBackend         bool
 	FTPHost              string
 	FTPPort              int
 	FTPUser              string
@@ -92,6 +93,7 @@ func envDefault(key, fallback string) string {
 func parseConfig() *Config {
 	config := &Config{}
 	flag.StringVar(&config.Backend, "backend", envDefault("BACKEND", "ftp"), "Storage backend (ftp or sftp)")
+	forceBackend := flag.String("force-backend", envDefault("FORCE_BACKEND", "false"), "Rebind state directory to current backend after operator confirmation (true or false)")
 	flag.StringVar(&config.FTPHost, "ftp-host", envDefault("FTP_HOST", "localhost"), "FTP/SFTP server host")
 	port := flag.String("ftp-port", envDefault("FTP_PORT", "21"), "FTP/SFTP server port")
 	ftpTLS := flag.String("ftp-tls", envDefault("FTP_TLS", "false"), "Use certificate-verified explicit FTPS (true or false)")
@@ -119,6 +121,11 @@ func parseConfig() *Config {
 	config.FTPTLS, err = strconv.ParseBool(*ftpTLS)
 	if err != nil {
 		slog.Error("FTP_TLS / -ftp-tls must be true or false")
+		os.Exit(1)
+	}
+	config.ForceBackend, err = strconv.ParseBool(*forceBackend)
+	if err != nil {
+		slog.Error("FORCE_BACKEND / -force-backend must be true or false")
 		os.Exit(1)
 	}
 	config.FTPMaxConnections, err = strconv.Atoi(*maxConnections)

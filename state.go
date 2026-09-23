@@ -128,6 +128,42 @@ func writeBackendIDAtomic(markerPath, id string) error {
 
 // OpenState initializes or reopens a durable state directory with exclusive process locking,
 // backend binding validation, directory layout creation, and abandoned spool cleanup.
+// ErrBackendMismatch is returned when a state directory is bound to a
+// different backend. Rebinding requires an explicit operator opt-in
+// (ForceBackendID) so an accidental backend switch never silently reuses
+// another backend's metadata.
+var ErrBackendMismatch = errors.New("state directory bound to a different backend")
+
+// ForceBackendID rewrites the backend marker, rebinding a state directory
+// to a new backend. Committed object metadata stays usable (ETags are
+// revalidated against remote stat); caller must ensure no gateway process
+// holds the directory (exclusive lock is taken during the rewrite).
+func ForceBackendID(dir, backendID string) error {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve absolute state directory: %w", err)
+	}
+	lockPath := filepath.Join(absDir, ".lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open lock file %s: %w", lockPath, err)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("state directory %s is locked by another process: %w", absDir, err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	if backendID == "" {
+		return errors.New("backend ID cannot be empty")
+	}
+	if err := writeBackendIDAtomic(filepath.Join(absDir, "backend.id"), backendID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// OpenState initializes or reopens a durable state directory with exclusive process locking,
+// backend binding validation, directory layout creation, and abandoned spool cleanup.
 func OpenState(dir, backendID string, maxBytes int64) (*State, error) {
 	if dir == "" {
 		return nil, errors.New("state directory cannot be empty")
@@ -170,7 +206,7 @@ func OpenState(dir, backendID string, maxBytes int64) (*State, error) {
 		if backendID != "" && existing != backendID {
 			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 			_ = lockFile.Close()
-			return nil, fmt.Errorf("state directory %s bound to backend %s, cannot be reused for backend %s", absDir, existing, backendID)
+			return nil, fmt.Errorf("%w: state directory %s bound to backend %s, cannot be reused for backend %s (see -force-backend / ForceBackendID)", ErrBackendMismatch, absDir, existing, backendID)
 		}
 	} else if errors.Is(err, os.ErrNotExist) {
 		if backendID == "" {

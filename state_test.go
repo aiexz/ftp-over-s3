@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,4 +235,24 @@ func TestWriteJSONAtomic(t *testing.T) {
 	if !strings.Contains(string(data), `"name": "gateway"`) {
 		t.Errorf("unexpected content: %s", string(data))
 	}
+}
+
+func TestState_BackendRebindOptIn(t *testing.T) {
+	dir := t.TempDir()
+	s1, err := OpenState(dir, "backend-alpha", 1024*1024)
+	if err != nil {
+		t.Fatalf("initial OpenState failed: %v", err)
+	}
+	s1.Close()
+	if _, err := OpenState(dir, "backend-beta", 1024*1024); !errors.Is(err, ErrBackendMismatch) {
+		t.Fatalf("expected ErrBackendMismatch, got %v", err)
+	}
+	if err := ForceBackendID(dir, "backend-beta"); err != nil {
+		t.Fatalf("ForceBackendID failed: %v", err)
+	}
+	s2, err := OpenState(dir, "backend-beta", 1024*1024)
+	if err != nil {
+		t.Fatalf("reopen after rebind failed: %v", err)
+	}
+	s2.Close()
 }

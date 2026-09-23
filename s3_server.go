@@ -125,6 +125,13 @@ func NewS3Server(config *Config) (*S3Server, error) {
 
 	bid := backendID(config)
 	st, err := OpenState(stateDir, bid, maxStagingBytes)
+	if err != nil && errors.Is(err, ErrBackendMismatch) && config.ForceBackend {
+		slog.Warn("rebinding state directory to new backend by operator request", "state_dir", stateDir)
+		if ferr := ForceBackendID(stateDir, bid); ferr != nil {
+			return nil, ferr
+		}
+		st, err = OpenState(stateDir, bid, maxStagingBytes)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +163,13 @@ func NewS3Server(config *Config) (*S3Server, error) {
 
 func (s *S3Server) Close() error {
 	var errs []error
+	if s.ftp != nil {
+		if closer, ok := s.ftp.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
 	if s.mpManager != nil {
 		if err := s.mpManager.Close(); err != nil {
 			errs = append(errs, err)

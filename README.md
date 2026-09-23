@@ -32,7 +32,7 @@ Mounting the named volume `ftp-over-s3-state:/data` ensures persistent metadata,
 
 **Security & Transport:** use `FTP_TLS=true` (or `-ftp-tls=true`) for explicit FTPS: both control and data connections use TLS with certificate and hostname verification. No insecure certificate bypass is provided. Plain FTP remains available for trusted local networks; implicit FTPS is not implemented.
 
-**SFTP backend:** set `BACKEND=sftp` (or `-backend sftp`) to use SFTP instead of FTP. Authentication is key file (`SFTP_KEY_FILE` / `-sftp-key-file`, optional passphrase via `SFTP_KEY_PASS`) with password (`FTP_PASSWORD`) as fallback; host verification via a `known_hosts` file (`SFTP_KNOWN_HOSTS` / `-sftp-known-hosts`) is required — unknown or mismatched hosts fail closed, no trust-on-first-use. Backend identity includes the backend kind, so FTP and SFTP against the same host use separate state bindings.
+**SFTP backend:** set `BACKEND=sftp` (or `-backend sftp`) to use SFTP instead of FTP. Authentication is key file (`SFTP_KEY_FILE` / `-sftp-key-file`, optional passphrase via `SFTP_KEY_PASS`) with password (`FTP_PASSWORD`) as fallback; host verification via a `known_hosts` file (`SFTP_KNOWN_HOSTS` / `-sftp-known-hosts`) is required — unknown or mismatched hosts fail closed, no trust-on-first-use. Backend identity includes the backend kind, so FTP and SFTP against the same host use separate state bindings. Switching backends against the same `STATE_DIR` fails closed with a backend-mismatch error; to rebind explicitly (committed metadata is revalidated against remote stat), restart once with `FORCE_BACKEND=true` (or `-force-backend=true`), then remove the flag.
 
 The gateway listener is plain HTTP; native HTTPS is not implemented, and deploying dummy or fake TLS domain configurations in the gateway is not supported. For public or remote clients, terminate HTTPS with an external reverse proxy (e.g., Nginx, Caddy, Envoy, or AWS ALB). The reverse proxy **must preserve the raw request `Host` header, URL query string, and un-normalized request path** exactly as received from the client. AWS SigV4 calculates canonical request hashes over the exact host, path, and query strings; rewriting, URL-decoding, or stripping headers causes signature verification failures (`SignatureDoesNotMatch`). Restrict the FTP account to its intended storage root. If both S3 credentials are omitted, authentication is disabled with a startup warning. Supplying only one credential is a startup error.
 
@@ -54,6 +54,7 @@ Explicit command-line flags override environment variables.
 | `-sftp-key-file` | `SFTP_KEY_FILE` | Empty; SFTP private key file |
 | `-sftp-key-pass` | `SFTP_KEY_PASS` | Empty; SFTP private key passphrase |
 | `-sftp-known-hosts` | `SFTP_KNOWN_HOSTS` | Required for `sftp` backend; known_hosts file |
+| `-force-backend` | `FORCE_BACKEND` | `false`; `true` rebinds `STATE_DIR` to the current backend once |
 | `-listen` | `LISTEN_ADDR` | `:8080` |
 | `-access-key-id` | `S3_ACCESS_KEY_ID` | Empty: authentication disabled |
 | `-secret-key` | `S3_SECRET_KEY` | Empty: authentication disabled |
