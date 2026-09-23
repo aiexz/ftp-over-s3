@@ -20,3 +20,10 @@ ftp-over-s3
 README.md
 LICENSE
 *.log 
+
+# Local credentials
+ftp.txt
+
+# Local state
+.ftp-over-s3-state
+.ftp-over-s3-state*

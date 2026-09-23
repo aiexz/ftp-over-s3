@@ -1,1 +1,4 @@
 .vscode/
+ftp.txt
+.ftp-over-s3-state
+.ftp-over-s3-state*
