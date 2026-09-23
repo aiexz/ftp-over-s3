@@ -94,7 +94,7 @@ func (cr *contextReader) Read(p []byte) (n int, err error) {
 
 type S3Server struct {
 	config     *Config
-	ftp        *FTPClient
+	ftp        Backend
 	state      *State
 	metadata   *MetadataStore
 	mpManager  *MultipartManager
@@ -138,9 +138,15 @@ func NewS3Server(config *Config) (*S3Server, error) {
 	adm := NewUploadAdmission(st, maxConcurrentUploads, uploadTimeout)
 	metaStore := NewMetadataStore(st)
 
+	var backend Backend
+	if strings.EqualFold(strings.TrimSpace(config.Backend), "sftp") {
+		backend = NewSFTPClient(config)
+	} else {
+		backend = NewFTPClient(config)
+	}
 	return &S3Server{
 		config:    config,
-		ftp:       NewFTPClient(config),
+		ftp:       backend,
 		state:     st,
 		metadata:  metaStore,
 		mpManager: mp,
@@ -314,7 +320,7 @@ func (s *S3Server) checkWritePreconditions(r *http.Request, key string, info *Fi
 func (s *S3Server) commitObjectLocked(r *http.Request, key string, body io.Reader, meta ObjectMetadata) error {
 	existingInfo, err := s.getFileInfo(key)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to inspect destination on FTP backend."}
+		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to inspect destination on storage backend."}
 	}
 	if err := s.checkWritePreconditions(r, key, existingInfo); err != nil {
 		return err
@@ -347,7 +353,7 @@ func (s *S3Server) commitObjectLocked(r *http.Request, key string, body io.Reade
 				_ = s.metadata.Abort(key)
 			}
 		}
-		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to store object to FTP backend."}
+		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to store object to storage backend."}
 	}
 
 	if meta.ETag == "" && h != nil {
@@ -356,7 +362,7 @@ func (s *S3Server) commitObjectLocked(r *http.Request, key string, body io.Reade
 
 	newInfo, statErr := s.getFileInfo(key)
 	if statErr != nil {
-		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to stat object on FTP backend."}
+		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to stat object on storage backend."}
 	}
 
 	meta.Size = newInfo.Size
@@ -388,7 +394,7 @@ func (s *S3Server) deleteObject(r *http.Request, key string) error {
 
 	info, err := s.getFileInfo(key)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to inspect object on FTP backend."}
+		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to inspect object on storage backend."}
 	}
 
 	if err := s.checkWritePreconditions(r, key, info); err != nil {
@@ -420,7 +426,7 @@ func (s *S3Server) deleteObject(r *http.Request, key string) error {
 			return nil
 		}
 		// Unexpected delete error: retain pending marker so metadata fails closed
-		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to delete object from FTP backend."}
+		return &s3OperationError{Status: http.StatusInternalServerError, Code: "InternalError", Message: "Failed to delete object from storage backend."}
 	}
 
 	if s.metadata != nil {
@@ -1269,7 +1275,7 @@ func (s *S3Server) handleGet(w http.ResponseWriter, r *http.Request, bucket, key
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.")
 			return
 		}
-		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", "Failed to get file from FTP backend.")
+		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", "Failed to get file from storage backend.")
 		return
 	}
 
@@ -1319,7 +1325,7 @@ func (s *S3Server) handleGet(w http.ResponseWriter, r *http.Request, bucket, key
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.")
 			return
 		}
-		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", "Failed to read file from FTP backend.")
+		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", "Failed to read file from storage backend.")
 		return
 	}
 	defer reader.Close()
@@ -1343,7 +1349,12 @@ func (s *S3Server) handleGet(w http.ResponseWriter, r *http.Request, bucket, key
 		w.WriteHeader(http.StatusPartialContent)
 
 		if start > 0 {
-			if _, err := io.CopyN(io.Discard, reader, start); err != nil {
+			if seeker, ok := reader.(io.Seeker); ok {
+				if _, err := seeker.Seek(start, io.SeekStart); err != nil {
+					slog.Error("failed to seek to range start", "key", key, "error", err)
+					panic(http.ErrAbortHandler)
+				}
+			} else if _, err := io.CopyN(io.Discard, reader, start); err != nil {
 				slog.Error("failed to seek to range start", "key", key, "error", err)
 				panic(http.ErrAbortHandler)
 			}
@@ -1415,7 +1426,7 @@ func (s *S3Server) handleHead(w http.ResponseWriter, r *http.Request, bucket, ke
 			writeS3Error(w, r, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.")
 			return
 		}
-		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", "Failed to inspect file on FTP backend.")
+		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", "Failed to inspect file on storage backend.")
 		return
 	}
 

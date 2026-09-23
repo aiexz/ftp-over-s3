@@ -38,17 +38,22 @@ func (s *State) UploadsDir() string {
 	return filepath.Join(s.Root, "uploads")
 }
 
-// backendID generates a non-secret canonical identifier for the remote FTP backend based
-// on normalized host, port, and username. Transport security and connection limits do not
-// alter the logical storage root, and passwords are never included.
+// backendID generates a non-secret canonical identifier for the remote backend
+// based on normalized backend kind, host, port, and username. Transport
+// security and connection limits do not alter the logical storage root, and
+// passwords are never included.
 func backendID(config *Config) string {
 	if config == nil {
 		return ""
 	}
+	backend := strings.ToLower(strings.TrimSpace(config.Backend))
+	if backend == "" {
+		backend = "ftp"
+	}
 	host := strings.ToLower(strings.TrimSpace(config.FTPHost))
 	port := config.FTPPort
 	user := config.FTPUser
-	raw := fmt.Sprintf("%s:%d:%s", host, port, user)
+	raw := fmt.Sprintf("%s:%s:%d:%s", backend, host, port, user)
 	h := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(h[:])
 }

@@ -47,6 +47,16 @@ const (
 	defaultMaxConnections = 2
 )
 
+// Backend is the storage-backend contract consumed by the S3 layer. FTPClient
+// implements it; the SFTP backend implements the same surface so either can
+// be selected via Config without touching callers.
+type Backend interface {
+	List(path string) ([]FileInfo, error)
+	Get(path string) (io.ReadCloser, error)
+	Put(path string, reader io.Reader) error
+	Delete(path string) error
+}
+
 type FTPClient struct {
 	config *Config
 	// sem bounds the number of concurrent FTP connections this client opens.
@@ -310,7 +320,7 @@ func splitDirFile(p string) (dir string, file string) {
 	return p[:idx], p[idx+1:]
 }
 
-func (c *FTPClient) tempUploadPath(dir string) (string, error) {
+func tempUploadPath(dir string) (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate random temporary filename: %w", err)
@@ -720,7 +730,7 @@ func (c *FTPClient) Put(path string, reader io.Reader) error {
 		}
 	}
 
-	tmpPath, err := c.tempUploadPath(dir)
+	tmpPath, err := tempUploadPath(dir)
 	if err != nil {
 		return err
 	}

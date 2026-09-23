@@ -15,12 +15,16 @@ import (
 )
 
 type Config struct {
+	Backend              string
 	FTPHost              string
 	FTPPort              int
 	FTPUser              string
 	FTPPassword          string
 	FTPTLS               bool
 	FTPMaxConnections    int
+	SFTPKeyFile          string
+	SFTPKeyPass          string
+	SFTPKnownHosts       string
 	ListenAddr           string
 	AccessKeyID          string
 	SecretKey            string
@@ -87,12 +91,16 @@ func envDefault(key, fallback string) string {
 
 func parseConfig() *Config {
 	config := &Config{}
-	flag.StringVar(&config.FTPHost, "ftp-host", envDefault("FTP_HOST", "localhost"), "FTP server host")
-	port := flag.String("ftp-port", envDefault("FTP_PORT", "21"), "FTP server port")
+	flag.StringVar(&config.Backend, "backend", envDefault("BACKEND", "ftp"), "Storage backend (ftp or sftp)")
+	flag.StringVar(&config.FTPHost, "ftp-host", envDefault("FTP_HOST", "localhost"), "FTP/SFTP server host")
+	port := flag.String("ftp-port", envDefault("FTP_PORT", "21"), "FTP/SFTP server port")
 	ftpTLS := flag.String("ftp-tls", envDefault("FTP_TLS", "false"), "Use certificate-verified explicit FTPS (true or false)")
-	maxConnections := flag.String("ftp-max-connections", envDefault("FTP_MAX_CONNECTIONS", "2"), "Maximum simultaneous FTP connections")
-	flag.StringVar(&config.FTPUser, "ftp-user", os.Getenv("FTP_USER"), "FTP username")
-	flag.StringVar(&config.FTPPassword, "ftp-password", os.Getenv("FTP_PASSWORD"), "FTP password")
+	maxConnections := flag.String("ftp-max-connections", envDefault("FTP_MAX_CONNECTIONS", "2"), "Maximum simultaneous FTP/SFTP connections")
+	flag.StringVar(&config.FTPUser, "ftp-user", os.Getenv("FTP_USER"), "FTP/SFTP username")
+	flag.StringVar(&config.FTPPassword, "ftp-password", os.Getenv("FTP_PASSWORD"), "FTP password or SFTP password auth")
+	flag.StringVar(&config.SFTPKeyFile, "sftp-key-file", os.Getenv("SFTP_KEY_FILE"), "SFTP private key file (optional when password set)")
+	flag.StringVar(&config.SFTPKeyPass, "sftp-key-pass", os.Getenv("SFTP_KEY_PASS"), "SFTP private key passphrase")
+	flag.StringVar(&config.SFTPKnownHosts, "sftp-known-hosts", os.Getenv("SFTP_KNOWN_HOSTS"), "SFTP known_hosts file (required for sftp backend)")
 	flag.StringVar(&config.ListenAddr, "listen", envDefault("LISTEN_ADDR", ":8080"), "Address to listen on")
 	flag.StringVar(&config.AccessKeyID, "access-key-id", os.Getenv("S3_ACCESS_KEY_ID"), "S3 access key ID")
 	flag.StringVar(&config.SecretKey, "secret-key", os.Getenv("S3_SECRET_KEY"), "S3 secret access key")
@@ -137,9 +145,25 @@ func parseConfig() *Config {
 		slog.Error("STATE_DIR / -state-dir must not be empty")
 		os.Exit(1)
 	}
-	if config.FTPUser == "" || config.FTPPassword == "" {
-		slog.Error("FTP credentials must be provided via flags or environment variables")
+	config.Backend = strings.ToLower(strings.TrimSpace(config.Backend))
+	if config.Backend != "ftp" && config.Backend != "sftp" {
+		slog.Error("BACKEND / -backend must be ftp or sftp")
 		os.Exit(1)
+	}
+	if config.Backend == "ftp" {
+		if config.FTPUser == "" || config.FTPPassword == "" {
+			slog.Error("FTP credentials must be provided via flags or environment variables")
+			os.Exit(1)
+		}
+	} else {
+		if config.FTPUser == "" || (config.FTPPassword == "" && config.SFTPKeyFile == "") {
+			slog.Error("SFTP requires a username plus key file (-sftp-key-file) or password (-ftp-password)")
+			os.Exit(1)
+		}
+		if strings.TrimSpace(config.SFTPKnownHosts) == "" {
+			slog.Error("SFTP requires known-hosts via -sftp-known-hosts (no implicit trust on first use)")
+			os.Exit(1)
+		}
 	}
 	if (config.AccessKeyID == "") != (config.SecretKey == "") {
 		slog.Error("S3 access key and secret key must be configured together")

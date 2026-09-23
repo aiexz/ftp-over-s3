@@ -187,12 +187,19 @@ func TestBackendID_Normalization(t *testing.T) {
 		FTPPort: 21,
 		FTPUser: "alice", // username casing difference
 	}
+	cfgSFTP := &Config{
+		Backend: "sftp",
+		FTPHost: "ftp.example.com",
+		FTPPort: 21,
+		FTPUser: "Alice",
+	}
 
 	id1 := backendID(cfg1)
 	id2 := backendID(cfg2)
 	id3 := backendID(cfg3)
+	idSFTP := backendID(cfgSFTP)
 
-	if id1 == "" || id2 == "" || id3 == "" {
+	if id1 == "" || id2 == "" || id3 == "" || idSFTP == "" {
 		t.Fatalf("expected non-empty backend IDs")
 	}
 	if id1 != id2 {
@@ -200,6 +207,9 @@ func TestBackendID_Normalization(t *testing.T) {
 	}
 	if id1 == id3 {
 		t.Errorf("expected username casing difference to produce distinct ID")
+	}
+	if id1 == idSFTP {
+		t.Errorf("expected backend kind to produce distinct ID")
 	}
 }
 
